@@ -3,6 +3,7 @@ import re
 import time
 import json
 import queue
+import subprocess
 
 import numpy as np
 import pyaudio
@@ -12,13 +13,31 @@ from openwakeword.model import Model
 
 
 # -----------------------------
-# SPEAKER / TTS
+# PIPER TTS
 # -----------------------------
+
+PIPER_BIN = "./piper/piper"
+PIPER_MODEL = "voices/en_US-lessac-medium.onnx"
+RESPONSE_WAV = "response.wav"
+
 
 def speak(text):
     print("ROBOT:", text)
-    safe_text = text.replace('"', '')
-    os.system(f'espeak-ng "{safe_text}"')
+
+    subprocess.run(
+        [PIPER_BIN, "--model", PIPER_MODEL, "--output_file", RESPONSE_WAV],
+        input=text.encode("utf-8"),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+    subprocess.run(
+        ["aplay", RESPONSE_WAV],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
 
 
 # -----------------------------
@@ -59,11 +78,10 @@ NUMBERS = {
 
 
 def text_number_to_int(words):
-    words = words.lower().split()
     total = 0
     current = 0
 
-    for word in words:
+    for word in words.lower().split():
         if word in NUMBERS:
             value = NUMBERS[word]
             if value == 100:
@@ -80,89 +98,75 @@ def text_number_to_int(words):
 # -----------------------------
 
 def parse_command(text):
-    text = text.lower()
-    text = text.replace("-", " ")
+    text = text.lower().replace("-", " ")
 
     if "stop" in text or "cancel" in text:
         return {"action": "stop"}
-
-    action = None
-    direction = None
-
-    if "rotate" in text or "turn" in text:
-        action = "rotate"
-        if "left" in text:
-            direction = "left"
-        elif "right" in text:
-            direction = "right"
-    elif "move" in text or "go" in text:
-        action = "move"
-        if "forward" in text or "front" in text:
-            direction = "forward"
-        elif "backward" in text or "back" in text:
-            direction = "backward"
-        elif "left" in text:
-            direction = "left"
-        elif "right" in text:
-            direction = "right"
-
-    if not action or not direction:
-        return None
 
     digit_match = re.search(r"\b(\d+)\b", text)
 
     if digit_match:
         value = int(digit_match.group(1))
     else:
-        number_words = []
-        for word in text.split():
-            if word in NUMBERS:
-                number_words.append(word)
-
+        number_words = [word for word in text.split() if word in NUMBERS]
         value = text_number_to_int(" ".join(number_words))
 
     if value is None:
+        value = 10
+
+    action = None
+    direction = None
+
+    if "forward" in text or "front" in text:
+        action = "move"
+        direction = "forward"
+
+    elif "back" in text or "backward" in text:
+        action = "move"
+        direction = "backward"
+
+    elif "left" in text:
+        direction = "left"
+        if "turn" in text or "rotate" in text or "degree" in text:
+            action = "rotate"
+        else:
+            action = "move"
+
+    elif "right" in text:
+        direction = "right"
+        if "turn" in text or "rotate" in text or "degree" in text:
+            action = "rotate"
+        else:
+            action = "move"
+
+    if not action or not direction:
         return None
 
-    if "meter" in text or "metre" in text:
-        unit = "meter"
-        value_cm = value * 100
-    elif "millimeter" in text or "millimetre" in text or "mm" in text:
-        unit = "millimeter"
-        value_cm = value / 10
-    elif "degree" in text or "degrees" in text:
-        unit = "degree"
-        value_cm = None
-    else:
-        unit = "centimeter"
+    if action == "move":
         value_cm = value
 
-    if action == "move":
+        if "meter" in text or "metre" in text:
+            value_cm = value * 100
+
         if value_cm > 100:
-            return {
-                "error": "distance_too_large",
-                "max": 100
-            }
+            return {"error": "distance_too_large"}
 
         return {
             "action": "move",
             "direction": direction,
             "value": value_cm,
-            "unit": "centimeter"
+            "unit": "centimeter",
         }
 
     if action == "rotate":
         if value > 360:
-            return {
-                "error": "angle_too_large",
-                "max": 360
-            }
+            return {"error": "angle_too_large"}
 
         return {
             "action": "rotate",
             "direction": direction,
             "value": value,
-            "unit": "degree"
+            "unit": "degree",
         }
 
     return None
@@ -187,82 +191,41 @@ def command_to_sentence(cmd):
 
 samplerate = 16000
 audio_queue = queue.Queue()
-
 vosk_model = vosk.Model("model")
 
 COMMAND_GRAMMAR = '''
 [
-  "move forward one centimeter",
-  "move forward two centimeter",
-  "move forward three centimeter",
-  "move forward four centimeter",
-  "move forward five centimeter",
-  "move forward six centimeter",
-  "move forward seven centimeter",
-  "move forward eight centimeter",
-  "move forward nine centimeter",
-  "move forward ten centimeter",
-  "move forward twenty centimeter",
-  "move forward thirty centimeter",
-  "move forward fifty centimeter",
-  "move forward one meter",
+  "forward",
+  "back",
+  "backward",
+  "left",
+  "right",
 
-  "move backward one centimeter",
-  "move backward two centimeter",
-  "move backward three centimeter",
-  "move backward four centimeter",
-  "move backward five centimeter",
-  "move backward six centimeter",
-  "move backward seven centimeter",
-  "move backward eight centimeter",
-  "move backward nine centimeter",
-  "move backward ten centimeter",
-  "move backward twenty centimeter",
-  "move backward thirty centimeter",
-  "move backward fifty centimeter",
-  "move backward one meter",
+  "move",
+  "turn",
+  "rotate",
 
-  "move left one centimeter",
-  "move left two centimeter",
-  "move left three centimeter",
-  "move left four centimeter",
-  "move left five centimeter",
-  "move left six centimeter",
-  "move left seven centimeter",
-  "move left eight centimeter",
-  "move left nine centimeter",
-  "move left ten centimeter",
-  "move left twenty centimeter",
-  "move left thirty centimeter",
-  "move left fifty centimeter",
-  "move left one meter",
+  "one",
+  "two",
+  "three",
+  "four",
+  "five",
+  "six",
+  "seven",
+  "eight",
+  "nine",
+  "ten",
+  "twenty",
+  "thirty",
+  "forty",
+  "fifty",
+  "ninety",
 
-  "move right one centimeter",
-  "move right two centimeter",
-  "move right three centimeter",
-  "move right four centimeter",
-  "move right five centimeter",
-  "move right six centimeter",
-  "move right seven centimeter",
-  "move right eight centimeter",
-  "move right nine centimeter",
-  "move right ten centimeter",
-  "move right twenty centimeter",
-  "move right thirty centimeter",
-  "move right fifty centimeter",
-  "move right one meter",
-
-  "go forward ten centimeter",
-  "go back ten centimeter",
-  "go left ten centimeter",
-  "go right ten centimeter",
-
-  "rotate left ninety degree",
-  "rotate right ninety degree",
-  "turn left ninety degree",
-  "turn right ninety degree",
-  "rotate left forty five degree",
-  "rotate right forty five degree",
+  "centimeter",
+  "centimeters",
+  "meter",
+  "degree",
+  "degrees",
 
   "yes",
   "no",
@@ -277,11 +240,11 @@ def audio_callback(indata, frames, time_info, status):
     audio_queue.put(bytes(indata))
 
 
-def listen_once(timeout=8):
+def listen_once(timeout=6):
     recognizer = vosk.KaldiRecognizer(
         vosk_model,
         samplerate,
-        COMMAND_GRAMMAR
+        COMMAND_GRAMMAR,
     )
 
     while not audio_queue.empty():
@@ -289,15 +252,19 @@ def listen_once(timeout=8):
 
     with sd.RawInputStream(
         samplerate=samplerate,
-        blocksize=8000,
+        blocksize=4000,
         dtype="int16",
         channels=1,
-        callback=audio_callback
+        callback=audio_callback,
     ):
         start_time = time.time()
+        last_partial = ""
 
         while True:
             if time.time() - start_time > timeout:
+                if last_partial:
+                    print("TIMEOUT USING PARTIAL:", last_partial)
+                    return last_partial
                 return ""
 
             data = audio_queue.get()
@@ -305,9 +272,19 @@ def listen_once(timeout=8):
             if recognizer.AcceptWaveform(data):
                 result = json.loads(recognizer.Result())
                 text = result.get("text", "")
+
                 if text:
-                    print("HEARD:", text)
+                    print("FINAL:", text)
                     return text
+
+            else:
+                partial = json.loads(
+                    recognizer.PartialResult()
+                ).get("partial", "")
+
+                if partial and partial != last_partial:
+                    last_partial = partial
+                    print("PARTIAL:", partial)
 
 
 # -----------------------------
@@ -322,7 +299,7 @@ wake_stream = pa.open(
     channels=1,
     rate=16000,
     input=True,
-    frames_per_buffer=1280
+    frames_per_buffer=1280,
 )
 
 
@@ -332,24 +309,24 @@ def wait_for_wake_word():
     while True:
         audio_data = wake_stream.read(
             1280,
-            exception_on_overflow=False
+            exception_on_overflow=False,
         )
 
         audio_array = np.frombuffer(
             audio_data,
-            dtype=np.int16
+            dtype=np.int16,
         )
 
         prediction = wake_model.predict(audio_array)
 
         for wakeword, score in prediction.items():
-            if wakeword == "alexa" and score > 0.75:
+            if wakeword == "alexa" and score > 0.85:
                 print("Wake word detected:", wakeword, score)
                 return
 
 
 # -----------------------------
-# MAIN ASSISTANT LOOP
+# MAIN LOOP
 # -----------------------------
 
 def main():
@@ -358,25 +335,25 @@ def main():
     while True:
         wait_for_wake_word()
 
-        speak("Hello, what can I do?")
+        speak("Ready")
 
-        command_text = listen_once(timeout=8)
+        command_text = listen_once(timeout=6)
 
         if not command_text:
-            speak("I did not hear a command")
+            speak("I did not hear you")
             continue
 
         cmd = parse_command(command_text)
 
         if cmd is None:
-            speak("Sorry, I did not understand the command")
+            speak("Command not understood")
             continue
 
         if "error" in cmd:
             if cmd["error"] == "distance_too_large":
-                speak("Distance is too large. Maximum allowed is 100 centimeters")
+                speak("Distance too large")
             elif cmd["error"] == "angle_too_large":
-                speak("Angle is too large. Maximum allowed is 360 degrees")
+                speak("Angle too large")
             continue
 
         if cmd["action"] == "stop":
@@ -386,23 +363,23 @@ def main():
 
         sentence = command_to_sentence(cmd)
 
-        speak(f"Do you want me to {sentence}?")
+        speak(f"Confirm {sentence}")
 
-        answer = listen_once(timeout=6)
+        answer = listen_once(timeout=5)
 
         if answer in ["yes", "confirm"]:
-            speak(f"Okay, {sentence}")
+            speak("Okay")
             print("COMMAND CONFIRMED:", cmd)
 
-            # TODO: later call motor function here
+            # TODO: connect motor code here
             # execute_robot_command(cmd)
 
         elif answer in ["no", "cancel", "stop"]:
-            speak("Command cancelled")
+            speak("Cancelled")
             print("COMMAND CANCELLED")
 
         else:
-            speak("I did not get confirmation")
+            speak("No confirmation")
             print("NO CONFIRMATION")
 
 
